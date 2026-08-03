@@ -166,6 +166,29 @@ function librarySegment(grant) { return grant.library_type === 'group' ? 'groups
 function libraryRoot(grant) { return '/' + librarySegment(grant) + '/' + encodeURIComponent(grant.library_id); }
 function itemPath(grant, key, suffix = '') { return libraryRoot(grant) + '/items/' + encodeURIComponent(String(key).toUpperCase()) + suffix; }
 function collectionPath(grant, key, suffix = '') { return libraryRoot(grant) + '/collections/' + encodeURIComponent(String(key).toUpperCase()) + suffix; }
+function effectiveLibrary(grant, args = {}) {
+  const requestedType = text(args.library_type).trim();
+  const requestedId = text(args.library_id).trim();
+  if (requestedType === 'all') return { ...grant, all_libraries: 1, library_type: 'user', library_id: grant.zotero_user_id || grant.library_id };
+  if (requestedId && !requestedType) throw new Error('Specify library_type together with library_id');
+  if (requestedType && !['user', 'group'].includes(requestedType)) throw new Error('library_type must be user or group for a specific operation');
+  if (requestedType) {
+    if (!requestedId || !/^\d+$/.test(requestedId)) throw new Error('library_id must be numeric for a specific operation');
+    return { ...grant, all_libraries: 0, library_type: requestedType, library_id: requestedId };
+  }
+  return { ...grant, all_libraries: 0, library_type: grant.library_type === 'group' ? 'group' : 'user', library_id: grant.library_id };
+}
+async function resolveLibraries(grant, args = {}) {
+  const requestedType = text(args.library_type).trim();
+  if (requestedType !== 'all' && !grant.all_libraries) return [effectiveLibrary(grant, args)];
+  if (requestedType !== 'all' && requestedType && requestedType !== 'user' && requestedType !== 'group') throw new Error('library_type must be user, group, or all');
+  if (requestedType && requestedType !== 'all') return [effectiveLibrary(grant, args)];
+  const userId = text(grant.zotero_user_id || grant.library_id);
+  const userLibrary = { ...grant, all_libraries: 0, library_type: 'user', library_id: userId, library_name: 'My user library' };
+  let groups = [];
+  try { groups = (await zoteroFetch(grant.zotero_key, 'GET', '/users/' + encodeURIComponent(userId) + '/groups', { query: { limit: 100 } })).data || []; } catch { groups = []; }
+  return [userLibrary, ...groups.map(g => ({ ...grant, all_libraries: 0, library_type: 'group', library_id: String(g.id), library_name: g.name || ('Group ' + g.id) }))];
+}
 function zoteroWriteHeaders(version) {
   const h = { 'Zotero-Write-Token': randomHex(16) };
   if (version !== undefined && version !== null && version !== '') h['If-Unmodified-Since-Version'] = String(version);
@@ -177,20 +200,37 @@ function apiResult(result) {
 
 async function validateZoteroCredential(apiKey, libraryType, libraryId) {
   if (!/^[A-Za-z0-9]{20,80}$/.test(apiKey)) throw new Error('Zotero API key format is invalid');
-  if (!['user', 'group'].includes(libraryType)) throw new Error('library_type must be user or group');
-  if (!/^[0-9]+$/.test(String(libraryId))) throw new Error('library_id must be numeric');
+  if (!['user', 'group', 'all'].includes(libraryType)) throw new Error('library_type must be user, group, or all');
+  if (libraryType !== 'all' && !/^[0-9]+$/.test(String(libraryId))) throw new Error('library_id must be numeric');
   const keyInfo = await zoteroFetch(apiKey, 'GET', '/keys/' + encodeURIComponent(apiKey));
   const access = keyInfo.data?.access || {};
+  const userId = keyInfo.data?.userID || keyInfo.data?.userId || null;
+  if (libraryType === 'all') {
+    if (!userId) throw new Error('Zotero did not return the user ID for this key');
+    if (!access.user?.library || !access.user?.write) throw new Error('Enable user library and write access on this Zotero key');
+    let groups = [];
+    try { groups = (await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId) + '/groups', { query: { limit: 100 } })).data || []; } catch {}
+    if (groups.length && (!access.group?.library || !access.group?.write)) throw new Error('Enable group library and write access to use all accessible libraries');
+    const library = await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId), { query: { limit: 1 } });
+    return {
+      userId,
+      access: { library: true, write: true, files: !!access.user.files, notes: !!access.user.notes, group_library: !!access.group?.library, group_write: !!access.group?.write },
+      library: library.data,
+      allLibraries: true,
+      groups: groups.map(g => ({ id: String(g.id), name: g.name || null })),
+    };
+  }
   const scope = libraryType === 'group' ? access.group : access.user;
   if (!scope?.library) throw new Error('This Zotero API key does not have library read access');
   if (!scope?.write) throw new Error('This Zotero API key must have write access for this MCP');
-  const userId = keyInfo.data?.userID || keyInfo.data?.userId || null;
   const root = '/' + (libraryType === 'group' ? 'groups' : 'users') + '/' + encodeURIComponent(String(libraryId));
   const library = await zoteroFetch(apiKey, 'GET', root, { query: { limit: 1 } });
   return {
     userId,
     access: { library: !!scope.library, write: !!scope.write, files: !!scope.files, notes: !!scope.notes },
     library: library.data,
+    allLibraries: false,
+    groups: [],
   };
 }
 
@@ -202,9 +242,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-widt
 <div class="security">Create or review your key at <a href="https://www.zotero.org/settings/keys" target="_blank" rel="noopener">zotero.org/settings/keys</a>. Enable library access and write access.</div>
 <form method="POST" action="/authorize"><input type="hidden" name="flow_id" value="${quoteHtml(flow.flow_id)}">
 <label>Zotero API key</label><input name="api_key" type="password" autocomplete="off" required placeholder="Paste your Zotero API key"><div class="hint">The key is validated server-side and not displayed to the AI client.</div>
-<label>Library type</label><select name="library_type"><option value="user">My user library</option><option value="group">A group library</option></select>
-<label>Library ID</label><input name="library_id" inputmode="numeric" required placeholder="Your Zotero user ID or group ID"><div class="hint">For a user library, use the numeric user ID. For a group library, use the group ID.</div>
-<button type="submit">Validate and connect</button><div class="err"></div></form></body></html>`;
+<label>Library scope</label><select id="libraryType" name="library_type"><option value="all">All libraries accessible to this key</option><option value="user">My user library</option><option value="group">A group library</option></select>
+<label id="libraryIdLabel">Library ID</label><input id="libraryId" name="library_id" inputmode="numeric" placeholder="Only needed for a specific library"><div class="hint" id="libraryHint">All mode discovers your personal library and accessible group libraries. The key must have read and write permission for them.</div>
+<button type="submit">Validate and connect</button><div class="err"></div></form><script>const scopeEl=document.getElementById('libraryType'),idEl=document.getElementById('libraryId'),labelEl=document.getElementById('libraryIdLabel'),hintEl=document.getElementById('libraryHint');function syncScope(){const all=scopeEl.value==='all';idEl.disabled=all;idEl.required=!all;labelEl.style.display=all?'none':'block';idEl.style.display=all?'none':'block';hintEl.textContent=all?'The server discovers your personal library and accessible group libraries. Enable read and write access for user and group libraries on the key.':'For a user library, use the numeric user ID. For a group library, use the group ID.';}scopeEl.addEventListener('change',syncScope);syncScope();</script></body></html>`;
 }
 
 async function handleOAuth(request, env, url) {
@@ -270,9 +310,12 @@ async function handleOAuth(request, env, url) {
     const grantId = randomHex(16);
     const enc = await encrypt(apiKey, env);
     const accessJson = JSON.stringify(validated.access);
+    const storedType = libraryType === 'all' ? 'user' : libraryType;
+    const storedId = libraryType === 'all' ? String(validated.userId) : libraryId;
+    const allLibraries = validated.allLibraries ? 1 : 0;
     await dbRun(env,
-      'INSERT INTO grants(grant_id,zotero_key_enc,library_type,library_id,zotero_user_id,key_access_json,created_at) VALUES(?,?,?,?,?,?,?)',
-      grantId, enc, libraryType, libraryId, validated.userId, accessJson, now());
+      'INSERT INTO grants(grant_id,zotero_key_enc,library_type,library_id,zotero_user_id,key_access_json,created_at,all_libraries) VALUES(?,?,?,?,?,?,?,?)',
+      grantId, enc, storedType, storedId, validated.userId, accessJson, now(), allLibraries);
     const code = randomHex(32);
     await dbRun(env,
       'INSERT INTO oauth_codes(code_hash,client_id,grant_id,code_challenge,created_at,expires_at) VALUES(?,?,?,?,?,?)',
@@ -456,6 +499,15 @@ function relationUrl(grant, key) {
 
 async function retrieveAction(grant, action, args) {
   const key = grant.zotero_key;
+  if (action === 'list_libraries') {
+    const libraries = await resolveLibraries({ ...grant, all_libraries: 1 }, { library_type: 'all' });
+    return { libraries: libraries.map(lib => ({ type: lib.library_type, id: lib.library_id, name: lib.library_name || null, current: lib.library_type === grant.library_type && String(lib.library_id) === String(grant.library_id) })) };
+  }
+  if (action === 'list_groups') {
+    if (!grant.zotero_user_id) return { items: [], note: 'The API key did not return a user ID.' };
+    return apiResult(await zoteroFetch(key, 'GET', '/users/' + encodeURIComponent(grant.zotero_user_id) + '/groups', { query: queryOptions(args) }));
+  }
+  grant = effectiveLibrary(grant, args);
   const opts = queryOptions(args);
   if (action === 'get_item_metadata') return apiResult(await zoteroFetch(key, 'GET', itemPath(grant, requireItemKey(args))));
   if (action === 'get_item_fulltext') return apiResult(await zoteroFetch(key, 'GET', itemPath(grant, requireItemKey(args), '/fulltext')));
@@ -509,51 +561,63 @@ async function retrieveAction(grant, action, args) {
   throw new Error('Unsupported retrieval action: ' + action);
 }
 
+async function searchAcross(grant, args, queryFactory) {
+  const libraries = await resolveLibraries(grant, args);
+  const items = [];
+  const upstream = [];
+  for (const lib of libraries) {
+    const result = await zoteroFetch(grant.zotero_key, 'GET', libraryRoot(lib) + '/items', { query: queryFactory(lib) });
+    upstream.push({ library_type: lib.library_type, library_id: lib.library_id, status: result.status });
+    for (const item of (Array.isArray(result.data) ? result.data : [])) items.push({ ...item, mcp_library: { type: lib.library_type, id: lib.library_id, name: lib.library_name || null } });
+  }
+  return { items, libraries: libraries.map(lib => ({ type: lib.library_type, id: lib.library_id, name: lib.library_name || null })), upstream };
+}
+
 async function searchAction(grant, action, args) {
-  const key = grant.zotero_key;
   const opts = queryOptions(args);
   if (action === 'search_items' || action === 'chatgpt_connector_search') {
     const query = text(args.query).trim();
     if (!query) throw new Error('query is required');
-    const result = await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...opts, q: query, qmode: args.qmode || 'everything' } });
-    return { ...apiResult(result), query, mode: 'zotero_web_api' };
+    const packed = await searchAcross(grant, args, () => ({ ...opts, q: query, qmode: args.qmode || 'everything' }));
+    return { items: packed.items, count: packed.items.length, query, mode: 'zotero_web_api', libraries: packed.libraries, upstream_calls: packed.upstream };
   }
   if (action === 'search_by_tag') {
     const tag = text(args.tag).trim();
     if (!tag) throw new Error('tag is required');
-    return apiResult(await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...opts, tag } }));
+    const packed = await searchAcross(grant, args, () => ({ ...opts, tag }));
+    return { items: packed.items, count: packed.items.length, tag, libraries: packed.libraries, upstream_calls: packed.upstream };
   }
   if (action === 'search_by_citation_key') {
     const query = text(args.query || args.citation_key).trim();
     if (!query) throw new Error('query or citation_key is required');
-    const result = await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...opts, q: query, qmode: 'everything' } });
-    const items = Array.isArray(result.data) ? result.data.filter(item => /citation key\s*:/i.test(text(item?.data?.extra)) || text(item?.data?.citationKey).toLowerCase().includes(query.toLowerCase())) : [];
-    return { items, count: items.length, query, mode: 'citation_key_filter' };
+    const packed = await searchAcross(grant, args, () => ({ ...opts, q: query, qmode: 'everything' }));
+    const items = packed.items.filter(item => /citation key\s*:/i.test(text(item?.data?.extra)) || text(item?.data?.citationKey).toLowerCase().includes(query.toLowerCase()));
+    return { items, count: items.length, query, mode: 'citation_key_filter', libraries: packed.libraries, upstream_calls: packed.upstream };
   }
   if (action === 'advanced_search') {
     const conditions = Array.isArray(args.conditions) ? args.conditions.slice(0, 20) : [];
     const q = conditions.map(c => text(c.value)).filter(Boolean).join(' ');
-    const result = await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...opts, q, qmode: 'everything' } });
-    let items = Array.isArray(result.data) ? result.data : [];
+    const packed = await searchAcross(grant, args, () => ({ ...opts, q, qmode: 'everything' }));
+    let items = packed.items;
     for (const c of conditions) {
       const field = text(c.field || c.key).toLowerCase();
       const value = text(c.value).toLowerCase();
       if (!field || !value) continue;
       items = items.filter(item => text(item?.data?.[field]).toLowerCase().includes(value) || text(item?.data?.extra).toLowerCase().includes(value));
     }
-    return { items, count: items.length, conditions, mode: 'api-query-plus-edge-filter' };
+    return { items, count: items.length, conditions, mode: 'api-query-plus-edge-filter', libraries: packed.libraries, upstream_calls: packed.upstream };
   }
   if (action === 'semantic_search') {
     const query = text(args.query).trim();
     if (!query) throw new Error('query is required');
-    const result = await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...opts, q: query, qmode: 'everything' } });
-    return { ...apiResult(result), query, mode: 'keyword_fallback', semantic_index: false, note: 'ChromaDB and sentence-transformers are not run inside Workers Free. This is a Zotero Web API keyword fallback until an external vector index is explicitly configured.' };
+    const packed = await searchAcross(grant, args, () => ({ ...opts, q: query, qmode: 'everything' }));
+    return { items: packed.items, count: packed.items.length, query, mode: 'keyword_fallback', semantic_index: false, libraries: packed.libraries, upstream_calls: packed.upstream, note: 'ChromaDB and sentence-transformers are not run inside Workers Free. This is a Zotero Web API keyword fallback until an external vector index is explicitly configured.' };
   }
   if (action === 'get_search_database_status') return { enabled: false, backend: 'none', mode: 'cloudflare-free-edge', reason: 'The original ChromaDB local index cannot run in a stateless Worker.' };
   if (action === 'update_search_database') return { updated: false, enabled: false, blocked: true, reason: 'Full semantic indexing requires a separate PDF/text extraction and vector backend; not silently enabled on the free Worker.' };
   if (action === 'connector_fetch') {
-    const k = requireItemKey(args);
-    return apiResult(await zoteroFetch(key, 'GET', itemPath(grant, k)));
+    const scope = effectiveLibrary(grant, args);
+    return apiResult(await zoteroFetch(scope.zotero_key, 'GET', itemPath(scope, requireItemKey(args))));
   }
   throw new Error('Unsupported search action: ' + action);
 }
@@ -628,6 +692,7 @@ function dataForUpdate(args) {
 }
 
 async function writeAction(grant, action, args) {
+  grant = effectiveLibrary(grant, args);
   const key = grant.zotero_key;
   if (action === 'create_collection') {
     const name = text(args.name || args.title).trim();
@@ -725,6 +790,7 @@ async function writeAction(grant, action, args) {
 }
 
 async function annotationAction(grant, action, args) {
+  grant = effectiveLibrary(grant, args);
   const key = grant.zotero_key;
   if (action === 'get_annotations' || action === 'get_notes') {
     const parent = requireItemKey(args);
@@ -760,6 +826,7 @@ async function annotationAction(grant, action, args) {
 }
 
 async function pdfAction(grant, action, args) {
+  grant = effectiveLibrary(grant, args);
   const key = grant.zotero_key;
   if (action === 'read_pdf_pages') {
     const item = requireItemKey(args);
@@ -793,6 +860,7 @@ function sciteFields(tally, paper) {
 async function sciteAction(grant, action, args) {
   const key = grant.zotero_key;
   if (action === 'enrich_item') {
+    grant = effectiveLibrary(grant, args);
     let doi = normalizeDoi(args.doi);
     let item = null;
     if (!doi && args.item_key) { item = await getItem(grant, args.item_key); doi = doiFromItem(item); }
@@ -803,8 +871,8 @@ async function sciteAction(grant, action, args) {
   }
   if (action === 'enrich_search' || action === 'check_retractions') {
     let items;
-    if (args.item_keys?.length) items = []; else items = (await zoteroFetch(key, 'GET', libraryRoot(grant) + '/items', { query: { ...queryOptions(args), q: text(args.query), qmode: 'everything' } })).data || [];
-    if (args.item_keys?.length) for (const k of args.item_keys.slice(0, 50)) { try { items.push(await getItem(grant, k)); } catch {} }
+    if (args.item_keys?.length) items = []; else items = (await searchAcross(grant, args, () => ({ ...queryOptions(args), q: text(args.query), qmode: 'everything' }))).items;
+    if (args.item_keys?.length) { const targetGrant = effectiveLibrary(grant, args); for (const k of args.item_keys.slice(0, 50)) { try { items.push(await getItem(targetGrant, k)); } catch {} } }
     const entries = items.map(item => ({ item, doi: doiFromItem(item) })).filter(x => x.doi).slice(0, 50);
     const dois = entries.map(x => x.doi);
     const [tallies, papers] = await Promise.all([scitePost('/tallies', dois), scitePost('/papers', dois)]);
@@ -817,6 +885,7 @@ async function sciteAction(grant, action, args) {
 }
 
 async function synthesisAction(grant, action, args) {
+  grant = effectiveLibrary(grant, args);
   const key = grant.zotero_key;
   if (action === 'export_bibliography') {
     const keys = Array.isArray(args.item_keys) ? args.item_keys.filter(Boolean).slice(0, 50) : [];
@@ -907,6 +976,8 @@ function health(env) {
     capabilities: {
       web_api_crud: true,
       oauth_multi_user: true,
+      all_libraries_scope: true,
+      cross_library_search: true,
       pdf_indexed_fulltext: true,
       pdf_page_layout: false,
       local_file_import: false,
