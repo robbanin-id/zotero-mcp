@@ -229,7 +229,7 @@ async function validateZoteroCredential(apiKey, libraryType, libraryId) {
     const accessibleGroups = groupAccess.all?.library ? groups : groups.filter(g => groupAccess[String(g.id)]?.library);
     const readWriteGroups = accessibleGroups.filter(g => !(groupAccess.all || groupAccess[String(g.id)])?.write);
     if (readWriteGroups.length) throw new Error('Enable group write access for every selected group on this Zotero key');
-    const library = await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId), { query: { limit: 1 } });
+    const library = await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId) + '/items', { query: { limit: 1 } });
     return {
       userId,
       access: { library: true, write: true, files: !!access.user.files, notes: !!access.user.notes, groups: groupAccess, group_library: accessibleGroups.length > 0, group_write: accessibleGroups.length > 0 && !readWriteGroups.length },
@@ -242,7 +242,7 @@ async function validateZoteroCredential(apiKey, libraryType, libraryId) {
   if (!scope?.library) throw new Error('This Zotero API key does not have library read access');
   if (!scope?.write) throw new Error('This Zotero API key must have write access for this MCP');
   const root = '/' + (libraryType === 'group' ? 'groups' : 'users') + '/' + encodeURIComponent(String(libraryId));
-  const library = await zoteroFetch(apiKey, 'GET', root, { query: { limit: 1 } });
+  const library = await zoteroFetch(apiKey, 'GET', root + '/items', { query: { limit: 1 } });
   return {
     userId,
     access: { library: !!scope.library, write: !!scope.write, files: !!scope.files, notes: !!scope.notes },
