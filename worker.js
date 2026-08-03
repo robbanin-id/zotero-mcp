@@ -937,7 +937,7 @@ async function executeTool(tool, args, grant) {
   throw new Error('Unknown tool: ' + tool);
 }
 
-const SERVER_INSTRUCTIONS = 'Cloudflare-native multi-user Zotero MCP. Connect your own Zotero API key through OAuth. The server exposes the Web API read/write surface in eight categorized tools. Credentials are encrypted at rest and never returned to the MCP client. Use zotero_search with action=semantic_search only as a keyword fallback unless a future vector backend is enabled. PDF page-accurate extraction and local file paths are intentionally reported as unsupported on the free Worker runtime. Confirm destructive write actions before calling them.';
+const SERVER_INSTRUCTIONS = 'Cloudflare-native multi-user Zotero MCP. Connect your own Zotero API key through OAuth. The server exposes the Web API read/write surface in eight categorized tools. Credentials are encrypted at rest and never returned to the MCP client. All-library grants fan out search actions across the personal and permitted group libraries; use zotero_retrieval action=list_libraries to discover targets. Library-specific reads and writes default to the personal library; pass library_type and library_id to target a group. Use zotero_search with action=semantic_search only as a keyword fallback unless a future vector backend is enabled. PDF page-accurate extraction and local file paths are intentionally reported as unsupported on the free Worker runtime. Confirm destructive write actions before calling them.';
 
 async function handleMCP(request, env, grant) {
   if (request.method === 'GET') {
