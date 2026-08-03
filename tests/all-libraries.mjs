@@ -1,4 +1,4 @@
-import worker from '../src/worker.js';
+import worker from '../worker.js';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 const dbPath = '/tmp/zotero-mcp-all-libraries.sqlite';
