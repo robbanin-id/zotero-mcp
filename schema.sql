@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS grants (
   zotero_user_id TEXT,
   key_access_json TEXT,
   created_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  all_libraries INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS oauth_tokens (
