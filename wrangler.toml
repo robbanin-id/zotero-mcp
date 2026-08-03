@@ -1,0 +1,11 @@
+name = "zotero-mcp"
+main = "worker.js"
+compatibility_date = "2026-08-02"
+
+[vars]
+BASE_URL = "https://zotero-mcp.robbanin-id.workers.dev"
+
+[[d1_databases]]
+binding = "ZOTERO_DB"
+database_name = "zotero-mcp-db"
+database_id = "b2844768-26c3-414f-ad64-bfc023c799b9"
