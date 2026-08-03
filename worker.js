@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Zotero MCP for Cloudflare Workers
 // Cloudflare-native multi-user OAuth 2.1 adapter around the Zotero Web API.
 // The 54yyyu tool surface is represented by categorized umbrella tools so
@@ -291,6 +292,7 @@ async function handleOAuth(request, env, url) {
       const verifier = text(form.get('code_verifier'));
       const row = await dbFirst(env, 'SELECT * FROM oauth_codes WHERE code_hash=? AND expires_at>?', await sha256(code), now());
       if (!row) return json({ error: 'invalid_grant', error_description: 'Code not found or expired' }, 400);
+      if (text(form.get('client_id')) && text(form.get('client_id')) !== row.client_id) return json({ error: 'invalid_grant', error_description: 'Client mismatch' }, 400);
       if (await pkceS256(verifier) !== row.code_challenge) return json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400);
       await dbRun(env, 'DELETE FROM oauth_codes WHERE code_hash=?', row.code_hash);
       const accessToken = randomHex(32);
@@ -459,7 +461,7 @@ async function retrieveAction(grant, action, args) {
   if (action === 'get_item_fulltext') return apiResult(await zoteroFetch(key, 'GET', itemPath(grant, requireItemKey(args), '/fulltext')));
   if (action === 'get_attachment_path') {
     const item = (await zoteroFetch(key, 'GET', itemPath(grant, requireItemKey(args)))).data;
-    return { item_key: item?.key, title: itemTitle(item), filename: item?.data?.filename || null, content_type: item?.data?.contentType || null, api_file_url: item?.links?.enclosure?.href || item?.links?.self?.href + '/file' || null, note: 'A Worker cannot expose a local Zotero desktop path; use the Web API file endpoint.' };
+    return { item_key: item?.key, title: itemTitle(item), filename: item?.data?.filename || null, content_type: item?.data?.contentType || null, api_file_url: item?.links?.enclosure?.href || (item?.links?.self?.href ? item.links.self.href + '/file' : null), note: 'A Worker cannot expose a local Zotero desktop path; use the Web API file endpoint.' };
   }
   if (action === 'get_collections') return apiResult(await zoteroFetch(key, 'GET', libraryRoot(grant) + '/collections', { query: opts }));
   if (action === 'get_collection_items') return apiResult(await zoteroFetch(key, 'GET', collectionPath(grant, requireCollectionKey(args), '/items'), { query: opts }));
@@ -649,7 +651,7 @@ async function writeAction(grant, action, args) {
     if (op === 'delete') return writeAction(grant, 'delete_collection', args);
     if (op === 'update') {
       const ck = requireCollectionKey(args); const current = await zoteroFetch(key, 'GET', collectionPath(grant, ck));
-      const body = { data: { ...(current.data?.data || {}), ...(args.data || {}), name: args.name || args.data?.name || current.data?.data?.name } };
+      const body = { ...current.data, data: { ...(current.data?.data || {}), ...(args.data || {}), name: args.name || args.data?.name || current.data?.data?.name } };
       return apiResult(await zoteroFetch(key, 'PUT', collectionPath(grant, ck), { body, headers: zoteroWriteHeaders(args.version || current.data?.version) }));
     }
     throw new Error('operation must be create, update, or delete');
@@ -699,7 +701,7 @@ async function writeAction(grant, action, args) {
     if (!keys.length) throw new Error('item_keys is required');
     const results = [];
     for (const ik of keys) {
-      const current = await getItem(grant, ik); const patch = action === 'batch_update_tags' ? { tags: args.tags || [] } : { extra: text(args.extra || args.content) };
+      const current = await getItem(grant, ik); const patch = action === 'batch_update_tags' ? { tags: (args.tags || []).map(t => typeof t === 'string' ? { tag: t } : t) } : { extra: text(args.extra || args.content) };
       results.push({ item_key: ik, result: apiResult(await zoteroFetch(key, 'PATCH', itemPath(grant, ik), { body: patch, headers: zoteroWriteHeaders(current?.version) })) });
     }
     return { results, count: results.length };
