@@ -1,0 +1,14 @@
+name = "zotero-mcp"
+main = "worker.js"
+compatibility_date = "2026-08-02"
+
+[vars]
+BASE_URL = "https://zotero-mcp.robbanin-id.workers.dev"
+
+[[d1_databases]]
+binding = "ZOTERO_DB"
+database_name = "zotero-mcp-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Set the encryption key as a Worker secret, never in this file:
+# wrangler secret put ENCRYPTION_KEY
