@@ -41,6 +41,7 @@ function clampInt(v, min, max, fallback) {
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
+function normalizeNumericId(v) { const s = text(v).trim(); return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s; }
 function trimSlash(v) { return String(v || '').replace(/\/+$/, ''); }
 function baseUrl(request, env) { return trimSlash(env.BASE_URL || new URL(request.url).origin); }
 function quoteHtml(v) {
@@ -168,13 +169,13 @@ function itemPath(grant, key, suffix = '') { return libraryRoot(grant) + '/items
 function collectionPath(grant, key, suffix = '') { return libraryRoot(grant) + '/collections/' + encodeURIComponent(String(key).toUpperCase()) + suffix; }
 function effectiveLibrary(grant, args = {}) {
   const requestedType = text(args.library_type).trim();
-  const requestedId = text(args.library_id).trim();
+  const requestedId = normalizeNumericId(args.library_id);
   if (requestedType === 'all') return { ...grant, all_libraries: 1, library_type: 'user', library_id: grant.zotero_user_id || grant.library_id };
   if (requestedId && !requestedType) throw new Error('Specify library_type together with library_id');
   if (requestedType && !['user', 'group'].includes(requestedType)) throw new Error('library_type must be user or group for a specific operation');
   if (requestedType) {
     if (!requestedId || !/^\d+$/.test(requestedId)) throw new Error('library_id must be numeric for a specific operation');
-    return { ...grant, all_libraries: 0, library_type: requestedType, library_id: requestedId };
+    return { ...grant, all_libraries: 0, library_type: requestedType, library_id: normalizeNumericId(requestedId) };
   }
   return { ...grant, all_libraries: 0, library_type: grant.library_type === 'group' ? 'group' : 'user', library_id: grant.library_id };
 }
@@ -190,19 +191,19 @@ function accessibleGroupRows(grant, groups) {
   const groupMap = access.groups || access.group || {};
   if (groupMap.all?.library) return groups;
   if (!Object.keys(groupMap).length) return [];
-  return groups.filter(g => groupMap[String(g.id)]?.library);
+  return groups.filter(g => (groupMap[normalizeNumericId(g.id)] || groupMap[String(g.id)])?.library);
 }
 async function resolveLibraries(grant, args = {}) {
   const requestedType = text(args.library_type).trim();
   if (requestedType !== 'all' && !grant.all_libraries) return [effectiveLibrary(grant, args)];
   if (requestedType !== 'all' && requestedType && requestedType !== 'user' && requestedType !== 'group') throw new Error('library_type must be user, group, or all');
   if (requestedType && requestedType !== 'all') return [effectiveLibrary(grant, args)];
-  const userId = text(grant.zotero_user_id || grant.library_id);
+  const userId = normalizeNumericId(grant.zotero_user_id || grant.library_id);
   const userLibrary = { ...grant, all_libraries: 0, library_type: 'user', library_id: userId, library_name: 'My user library' };
   let groups = [];
   try { groups = (await zoteroFetch(grant.zotero_key, 'GET', '/users/' + encodeURIComponent(userId) + '/groups', { query: { limit: 100 } })).data || []; } catch { groups = []; }
   groups = accessibleGroupRows(grant, groups);
-  return [userLibrary, ...groups.map(g => ({ ...grant, all_libraries: 0, library_type: 'group', library_id: String(g.id), library_name: g.name || ('Group ' + g.id) }))];
+  return [userLibrary, ...groups.map(g => ({ ...grant, all_libraries: 0, library_type: 'group', library_id: normalizeNumericId(g.id), library_name: g.name || g.data?.name || ('Group ' + g.id) }))];
 }
 function zoteroWriteHeaders(version) {
   const h = { 'Zotero-Write-Token': randomHex(16) };
@@ -216,18 +217,19 @@ function apiResult(result) {
 async function validateZoteroCredential(apiKey, libraryType, libraryId) {
   if (!/^[A-Za-z0-9]{20,80}$/.test(apiKey)) throw new Error('Zotero API key format is invalid');
   if (!['user', 'group', 'all'].includes(libraryType)) throw new Error('library_type must be user, group, or all');
-  if (libraryType !== 'all' && !/^[0-9]+$/.test(String(libraryId))) throw new Error('library_id must be numeric');
+  const normalizedLibraryId = normalizeNumericId(libraryId);
+  if (libraryType !== 'all' && !/^[0-9]+$/.test(normalizedLibraryId)) throw new Error('library_id must be numeric');
   const keyInfo = await zoteroFetch(apiKey, 'GET', '/keys/' + encodeURIComponent(apiKey));
   const access = keyInfo.data?.access || {};
-  const userId = keyInfo.data?.userID || keyInfo.data?.userId || null;
+  const userId = normalizeNumericId(keyInfo.data?.userID || keyInfo.data?.userId || null);
   if (libraryType === 'all') {
     if (!userId) throw new Error('Zotero did not return the user ID for this key');
     if (!access.user?.library || !access.user?.write) throw new Error('Enable user library and write access on this Zotero key');
     let groups = [];
     try { groups = (await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId) + '/groups', { query: { limit: 100 } })).data || []; } catch {}
     const groupAccess = access.groups || access.group || {};
-    const accessibleGroups = groupAccess.all?.library ? groups : groups.filter(g => groupAccess[String(g.id)]?.library);
-    const readWriteGroups = accessibleGroups.filter(g => !(groupAccess.all || groupAccess[String(g.id)])?.write);
+    const accessibleGroups = groupAccess.all?.library ? groups : groups.filter(g => (groupAccess[normalizeNumericId(g.id)] || groupAccess[String(g.id)])?.library);
+    const readWriteGroups = accessibleGroups.filter(g => !(groupAccess.all || groupAccess[normalizeNumericId(g.id)] || groupAccess[String(g.id)])?.write);
     if (readWriteGroups.length) throw new Error('Enable group write access for every selected group on this Zotero key');
     const library = await zoteroFetch(apiKey, 'GET', '/users/' + encodeURIComponent(userId) + '/items', { query: { limit: 1 } });
     return {
@@ -235,13 +237,14 @@ async function validateZoteroCredential(apiKey, libraryType, libraryId) {
       access: { library: true, write: true, files: !!access.user.files, notes: !!access.user.notes, groups: groupAccess, group_library: accessibleGroups.length > 0, group_write: accessibleGroups.length > 0 && !readWriteGroups.length },
       library: library.data,
       allLibraries: true,
-      groups: accessibleGroups.map(g => ({ id: String(g.id), name: g.name || null })),
+      groups: accessibleGroups.map(g => ({ id: normalizeNumericId(g.id), name: g.name || g.data?.name || null })),
     };
   }
-  const scope = libraryType === 'group' ? access.group : access.user;
+  const groupScopes = access.groups || access.group || {};
+  const scope = libraryType === 'group' ? (groupScopes[normalizedLibraryId] || groupScopes.all || access.group) : access.user;
   if (!scope?.library) throw new Error('This Zotero API key does not have library read access');
   if (!scope?.write) throw new Error('This Zotero API key must have write access for this MCP');
-  const root = '/' + (libraryType === 'group' ? 'groups' : 'users') + '/' + encodeURIComponent(String(libraryId));
+  const root = '/' + (libraryType === 'group' ? 'groups' : 'users') + '/' + encodeURIComponent(normalizedLibraryId);
   const library = await zoteroFetch(apiKey, 'GET', root + '/items', { query: { limit: 1 } });
   return {
     userId,
@@ -329,7 +332,7 @@ async function handleOAuth(request, env, url) {
     const enc = await encrypt(apiKey, env);
     const accessJson = JSON.stringify(validated.access);
     const storedType = libraryType === 'all' ? 'user' : libraryType;
-    const storedId = libraryType === 'all' ? String(validated.userId) : libraryId;
+    const storedId = libraryType === 'all' ? normalizeNumericId(validated.userId) : normalizeNumericId(libraryId);
     const allLibraries = validated.allLibraries ? 1 : 0;
     await dbRun(env,
       'INSERT INTO grants(grant_id,zotero_key_enc,library_type,library_id,zotero_user_id,key_access_json,created_at,all_libraries) VALUES(?,?,?,?,?,?,?,?)',
