@@ -1,6 +1,7 @@
 name = "zotero-mcp"
 main = "worker.js"
-compatibility_date = "2026-08-02"
+compatibility_date = "2026-08-03"
+preview_urls = true
 
 [vars]
 BASE_URL = "https://zotero-mcp.robbanin-id.workers.dev"
