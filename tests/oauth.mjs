@@ -22,6 +22,9 @@ globalThis.fetch=async (input,init={})=>{
   return realFetch(input,init);
 };
 const req=(url,opts={})=>worker.fetch(new Request(url,opts),env);
+for(const path of ['/.well-known/oauth-protected-resource/mcp','/.well-known/oauth-authorization-server/mcp']){const r=await req('https://example.test'+path);if(r.status!==200)throw new Error('path-aware metadata '+path+' '+r.status);}
+const loopbackReg=await req('https://example.test/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'Desktop OAuth',redirect_uris:['http://127.0.0.1:43123/oauth/callback']})});
+if(loopbackReg.status!==201)throw new Error('loopback register '+loopbackReg.status+' '+await loopbackReg.text());
 const reg=await req('https://example.test/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'Test',redirect_uris:['https://client.test/cb']})});
 if(reg.status!==201)throw new Error('register '+reg.status+' '+await reg.text());
 const client=await reg.json();
