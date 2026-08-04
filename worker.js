@@ -43,6 +43,14 @@ function clampInt(v, min, max, fallback) {
 }
 function normalizeNumericId(v) { const s = text(v).trim(); return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s; }
 function trimSlash(v) { return String(v || '').replace(/\/+$/, ''); }
+function isAllowedRedirectUri(value) {
+  try {
+    const u = new URL(String(value));
+    if (u.protocol === 'https:') return true;
+    if (u.protocol !== 'http:') return false;
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
+  } catch { return false; }
+}
 function baseUrl(request, env) { return trimSlash(env.BASE_URL || new URL(request.url).origin); }
 function quoteHtml(v) {
   return text(v).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
@@ -270,16 +278,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-widt
 
 async function handleOAuth(request, env, url) {
   const base = baseUrl(request, env);
-  const path = url.pathname;
-  if (path === '/.well-known/oauth-authorization-server') return json(oauthMetadata(base));
-  if (path === '/.well-known/oauth-protected-resource') return json(resourceMetadata(base));
+  const path = url.pathname.replace(/\/+$/, '') || '/';
+  if (path === '/.well-known/oauth-authorization-server' || path === '/.well-known/oauth-authorization-server/mcp') return json(oauthMetadata(base));
+  if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') return json(resourceMetadata(base));
 
   if (path === '/register' && request.method === 'POST') {
     let body = {};
     try { body = await request.json(); } catch {}
     const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris.filter(x => typeof x === 'string') : [];
-    if (!redirectUris.length || redirectUris.length > 20 || !redirectUris.every(x => x.startsWith('https://'))) {
-      return json({ error: 'invalid_client_metadata', error_description: 'redirect_uris must contain HTTPS URLs' }, 400);
+    if (!redirectUris.length || redirectUris.length > 20 || !redirectUris.every(isAllowedRedirectUri)) {
+      return json({ error: 'invalid_client_metadata', error_description: 'redirect_uris must contain HTTPS URLs or localhost loopback URLs' }, 400);
     }
     const clientId = randomHex(16);
     await dbRun(env,
